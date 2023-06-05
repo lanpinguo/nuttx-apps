@@ -1,0 +1,29 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_SPI_TEST
+	tristate "\"SPI TEST!\" example"
+	default n
+	---help---
+		Enable the \"SPI TEST!\" example
+
+if EXAMPLES_SPI_TEST
+
+config EXAMPLES_SPI_TEST_PROGNAME
+	string "Program name"
+	default "spitest"
+	---help---
+		This is the name of the program that will be used when the NSH ELF
+		program is installed.
+
+config EXAMPLES_SPI_TEST_PRIORITY
+	int "SPI_TEST task priority"
+	default 100
+
+config EXAMPLES_SPI_TEST_STACKSIZE
+	int "SPI_TEST stack size"
+	default DEFAULT_TASK_STACKSIZE
+
+endif
