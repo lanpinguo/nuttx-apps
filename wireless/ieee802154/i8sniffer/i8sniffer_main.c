@@ -79,7 +79,7 @@
 /****************************************************************************
  * Private Types
  ****************************************************************************/
-
+#define MAX_EVENTS    16
 struct i8sniffer_state_s
 {
   bool initialized      : 1;
@@ -163,20 +163,52 @@ static int i8sniffer_daemon(int argc, FAR char *argv[])
   int ret;
   int fd;
 	FILE* datafile = NULL;
+  int epfd;
+  struct epoll_event event;
+  struct epoll_event *events;
 
   fprintf(stderr, "i8sniffer: daemon started\n");
   g_i8sniffer.daemon_started = true;
 
-  fd = open(g_i8sniffer.devpath, O_RDWR);
-  if (fd < 0)
+  events = calloc(MAX_EVENTS, sizeof(struct epoll_event));
+  if(events == NULL){
+    ret = errno;
+    return ret;
+  }
+
+  epfd = epoll_create1(EPOLL_CLOEXEC);
+  if (epfd < 0)
     {
       fprintf(stderr,
               "ERROR: cannot open %s, errno=%d\n",
               g_i8sniffer.devpath, errno);
       g_i8sniffer.daemon_started = false;
       ret = errno;
-      return ret;
+      goto EXIT;
     }
+
+  fd = open(g_i8sniffer.devpath, O_RDWR);
+  if (fd < 0)
+  {
+    fprintf(stderr,
+            "ERROR: cannot open %s, errno=%d\n",
+            g_i8sniffer.devpath, errno);
+    g_i8sniffer.daemon_started = false;
+    ret = errno;
+    goto EXIT;
+  }
+  event.events = EPOLLIN;
+  event.data.fd = fd;
+  ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
+  if (ret < 0)
+  {
+    fprintf(stderr,
+            "ERROR: cannot poll %d, errno=%d\n", fd, errno);
+    g_i8sniffer.daemon_started = false;
+    ret = errno;
+    goto EXIT;
+  }
+
 
   /* Place the MAC into promiscuous mode */
 
@@ -206,27 +238,33 @@ static int i8sniffer_daemon(int argc, FAR char *argv[])
    * and sending them over UDP to Wireshark.
    */
 
-  while (!g_i8sniffer.daemon_shutdown)
-  {
+  while (!g_i8sniffer.daemon_shutdown) {
+
       struct mac802154dev_rxframe_s frame;
       PCAPNG_IEEE_802154_TAP_META_t meta;
       clock_t systime;
+      int nr_events, i;
 
-      /* Get an incoming frame from the MAC character driver */
+      nr_events = epoll_wait(epfd, events, MAX_EVENTS, 1000);
 
-      ret = read(fd, &frame, sizeof(struct mac802154dev_rxframe_s));
-      if (ret < 0)
-      {
-        continue;
+      for(i = 0; i < nr_events; i++){
+        /* Get an incoming frame from the MAC character driver */
+        lseek(events[i].data.fd, 0x100, SEEK_SET);
+        ret = read(events[i].data.fd, &frame, sizeof(struct mac802154dev_rxframe_s));
+        if (ret < 0)
+        {
+          continue;
+        }
+
+        meta.fcs_type = 0;
+        meta.rss = 10;
+        meta.chl_assign = (2<<16) | 17;
+        systime = clock();
+        /* write to sdcard */
+        pcapng_ieee802154_tap_epb_append(datafile, (PCAPNG_EPB_HDR_t *)buf, frame.payload, frame.length, &meta);
+        fsync(fileno(datafile));
+
       }
-
-      meta.fcs_type = 0;
-      meta.rss = 10;
-      meta.chl_assign = (2<<16) | 17;
-      systime = clock();
-      /* write to sdcard */
-      pcapng_ieee802154_tap_epb_append(datafile, (PCAPNG_EPB_HDR_t *)buf, frame.payload, frame.length, &meta);
-      fsync(fileno(datafile));
 
   }
 
@@ -235,6 +273,8 @@ EXIT:
 	free(buf);
 	fclose(datafile);
   close(fd);
+  free(events);
+  close(epfd);
   printf("i8sniffer: daemon closing\n");
   return OK;
 }

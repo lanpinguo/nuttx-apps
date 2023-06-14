@@ -41,6 +41,7 @@ typedef enum OPT_TYPE_S{
     OPT_TYPE_RD,
     OPT_TYPE_WR,
     OPT_TYPE_CFG,
+    OPT_TYPE_DEMO,
 } OPT_TYPE_t;
 
 
@@ -48,6 +49,8 @@ typedef enum CC2520_CFG_E{
     CC2520_CFG_CHL = 1,
     CC2520_CFG_PROMIS,
     CC2520_CFG_STROBE,
+    CC2520_CFG_MOD_POLL,
+    CC2520_CFG_MOD_INT,
 }CC2520_CFG_e;
 
 /****************************************************************************
@@ -82,7 +85,7 @@ int main(int argc, FAR char *argv[])
 {
     int32_t ret = 0;
 	int32_t chr;
-	char opts[] =  "s:m:v:l:h:cr:w:"; //If a short parameter has a value, it is required to be followed by a colon ':'.
+	char opts[] =  "s:m:v:l:h:cr:w:d"; //If a short parameter has a value, it is required to be followed by a colon ':'.
     char *popt, *endptr;
     int this_option_optind = optind ? optind : 1;
     int option_index = 0;
@@ -113,7 +116,7 @@ int main(int argc, FAR char *argv[])
     uint16_t chl = 0;
     uint8_t strobe = 0;
     char devname[18] = {0};
-
+    uint8_t val = 0;
 
 
 
@@ -142,10 +145,14 @@ int main(int argc, FAR char *argv[])
             opt_type = OPT_TYPE_WR;
             addr = strtol(optarg, &endptr, 16);
 			break;
+        case 'd':
+            opt_type = OPT_TYPE_DEMO;
+			break;
         case 'c':
             opt_type = OPT_TYPE_CFG;
 			break;
         case 'v':
+            val = strtol(optarg, &endptr, 16);
 			break;
         case 'l':
             len = strtol(optarg, &endptr, 10);
@@ -167,13 +174,31 @@ int main(int argc, FAR char *argv[])
         lseek(fd, addr, SEEK_SET);
 
         /* Read response from SPI Test Driver */
-        int bytes_tx = write(fd, pkt_data, len);
+        int bytes_tx = write(fd, &val, 1);
+        if(bytes_tx <= 0){
+            printf("write error\n");
+        }
+
+        /* Close SPI Test Driver */
+        close(fd);
+    }
+
+    if(opt_type == OPT_TYPE_DEMO){
+
+        /* Open SPI Test Driver */
+        int fd = open(devname, O_RDWR);
+        assert(fd >= 0);
+
+        lseek(fd, 0x100, SEEK_SET);
+
+        /* Read response from SPI Test Driver */
+        int bytes_tx = write(fd, pkt_data, 0x4d);
         if(bytes_tx > 0){
-            printf("write to addr 0x%04x, len=%d\r\n", addr, bytes_tx);
+            printf("write to addr 0x%04x, len=%d\r\n", 0x100, bytes_tx);
             dump_buffer(pkt_data, bytes_tx);
         }
         else{
-            printf("read error\n");
+            printf("write error\n");
         }
 
         /* Close SPI Test Driver */
