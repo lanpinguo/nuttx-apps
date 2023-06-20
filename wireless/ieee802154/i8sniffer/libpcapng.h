@@ -135,6 +135,8 @@ typedef struct PCAPNG_IEEE_802154_TAP_META_s
 	uint32_t rss;
 	uint32_t bitrate;
 	uint32_t chl_assign; 
+	uint64_t sof_timestamp; 
+	uint64_t eof_timestamp; 
 
 }__attribute__((packed, aligned(1))) PCAPNG_IEEE_802154_TAP_META_t;
 

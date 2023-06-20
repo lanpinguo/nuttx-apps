@@ -51,7 +51,7 @@ size_t pcapng_shb_append(FILE* fd, PCAPNG_SHB_HDR_t* shb, void* options)
 	bytes = write(fileno(fd), shb, sizeof(PCAPNG_SHB_HDR_t));
 
 	bytes += write(fileno(fd), &shb->block_TotalLength, sizeof(shb->block_TotalLength));
-	printf("write SHB bytes %ld\n", bytes);
+	//printf("write SHB bytes %ld\n", bytes);
 
 
 	return bytes;
@@ -71,7 +71,7 @@ size_t pcapng_idb_append(FILE* fd, PCAPNG_IDB_HDR_t* idb, void* options)
 
 
 	bytes += write(fileno(fd), &idb->block_TotalLength, sizeof(idb->block_TotalLength));
-	printf("write IDB bytes %ld\n", bytes);
+	//printf("write IDB bytes %ld\n", bytes);
 
 
 	return bytes;
@@ -95,7 +95,6 @@ size_t pcapng_epb_append(FILE* fd, PCAPNG_EPB_HDR_t* epb, uint8_t* pkt_data, uin
 	bytes += write(fileno(fd), pkt_data, pkt_len);
 
 	bytes += write(fileno(fd), &epb->block_TotalLength, sizeof(epb->block_TotalLength));
-	printf("write EPB bytes %ld\n", bytes);
 
 
 	return bytes;
@@ -139,6 +138,13 @@ size_t pcapng_ieee802154_tap_epb_append(FILE* fd, PCAPNG_EPB_HDR_t* epb, uint8_t
 	tap_hdr->length += sizeof(PCAPNG_Option_t) + 4;
 	i += sizeof(PCAPNG_Option_t) + 4;
 
+	pOpt = (PCAPNG_Option_t*)&pbuf[i];
+	pOpt->type = EOF_TIMESTAMP;
+	pOpt->len = 8;
+	*(uint64_t*)pOpt->value = meta->eof_timestamp;
+	tap_hdr->length += sizeof(PCAPNG_Option_t) + 8;
+	i += sizeof(PCAPNG_Option_t) + 8;
+
 	memcpy(&pbuf[i], pkt_data, pkt_len);
 	i += pkt_len;
 	uint32_t padding_bytes = 4 - pkt_len % 4;
@@ -150,6 +156,7 @@ size_t pcapng_ieee802154_tap_epb_append(FILE* fd, PCAPNG_EPB_HDR_t* epb, uint8_t
 
 	bytes = pcapng_epb_append(fd, (PCAPNG_EPB_HDR_t *)epb, (uint8_t*)pbuf, i, 0);
 
+	//printf("chl %ld write EPB bytes %ld\n", meta->chl_assign, bytes);
 
 	return bytes;
 }

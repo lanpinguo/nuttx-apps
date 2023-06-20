@@ -96,7 +96,18 @@ struct i8sniffer_state_s
 
   FAR uint8_t dev_list[32];
 
+
 };
+
+
+struct i8node_s
+{
+  int id;
+  int chnl;
+  int fd;
+  int valid;
+};
+
 
 /****************************************************************************
  * Private Function Prototypes
@@ -110,6 +121,13 @@ static int i8sniffer_daemon(int argc, FAR char *argv[]);
  ****************************************************************************/
 
 static struct i8sniffer_state_s g_i8sniffer;
+
+struct i8node_s nodes[16] = {
+  {0, 15, 0, 1},
+  {1, 25, 0, 1},
+  {6, 26, 0, 1},
+  {7, 20, 0, 1},
+};
 
 /****************************************************************************
  * Public Data
@@ -161,11 +179,11 @@ static int i8sniffer_init(FAR struct i8sniffer_state_s *i8sniffer)
 static int i8sniffer_daemon(int argc, FAR char *argv[])
 {
   int ret;
-  int fd;
 	FILE* datafile = NULL;
   int epfd;
   struct epoll_event event;
   struct epoll_event *events;
+  struct i8node_s *pNode = NULL;
 
   fprintf(stderr, "i8sniffer: daemon started\n");
   g_i8sniffer.daemon_started = true;
@@ -187,36 +205,44 @@ static int i8sniffer_daemon(int argc, FAR char *argv[])
       goto EXIT;
     }
 
-  fd = open(g_i8sniffer.devpath, O_RDWR);
-  if (fd < 0)
-  {
-    fprintf(stderr,
-            "ERROR: cannot open %s, errno=%d\n",
-            g_i8sniffer.devpath, errno);
-    g_i8sniffer.daemon_started = false;
-    ret = errno;
-    goto EXIT;
+  for(int i = 0; i < 16 ; i++){
+    pNode = &nodes[i];
+    if(pNode->valid == 0){
+      continue;
+    }
+    char devpath[i8sniffer_MAX_DEVPATH];
+    sprintf(devpath, "%s%d", DEV_PATH_PREFIX, pNode->id);
+    pNode->fd = open(devpath, O_RDWR | O_NONBLOCK);
+    if (pNode->fd < 0)
+    {
+      fprintf(stderr,
+              "ERROR: cannot open %s, errno=%d\n",
+              devpath, errno);
+      g_i8sniffer.daemon_started = false;
+      ret = errno;
+      goto EXIT;
+    }
+    event.events = EPOLLIN;
+    event.data.ptr = pNode;
+    ret = epoll_ctl(epfd, EPOLL_CTL_ADD, pNode->fd, &event);
+    if (ret < 0)
+    {
+      fprintf(stderr,
+              "ERROR: cannot poll %d, errno=%d\n", pNode->fd, errno);
+      g_i8sniffer.daemon_started = false;
+      ret = errno;
+      goto EXIT;
+    }
+
+    ieee802154_setchan(pNode->fd, pNode->chnl);
+
+    /* Place the MAC into promiscuous mode */
+    ieee802154_setpromisc(pNode->fd, true);
+
+    /* Always listen */
+    ieee802154_setrxonidle(pNode->fd, true);
+  
   }
-  event.events = EPOLLIN;
-  event.data.fd = fd;
-  ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event);
-  if (ret < 0)
-  {
-    fprintf(stderr,
-            "ERROR: cannot poll %d, errno=%d\n", fd, errno);
-    g_i8sniffer.daemon_started = false;
-    ret = errno;
-    goto EXIT;
-  }
-
-
-  /* Place the MAC into promiscuous mode */
-
-  ieee802154_setpromisc(fd, true);
-
-  /* Always listen */
-
-  ieee802154_setrxonidle(fd, true);
 
 	uint8_t  *buf = calloc(1, 256);
 
@@ -242,28 +268,36 @@ static int i8sniffer_daemon(int argc, FAR char *argv[])
 
       struct mac802154dev_rxframe_s frame;
       PCAPNG_IEEE_802154_TAP_META_t meta;
-      clock_t systime;
+      // clock_t systime;
       int nr_events, i;
 
       nr_events = epoll_wait(epfd, events, MAX_EVENTS, 1000);
 
       for(i = 0; i < nr_events; i++){
         /* Get an incoming frame from the MAC character driver */
-        lseek(events[i].data.fd, 0x100, SEEK_SET);
-        ret = read(events[i].data.fd, &frame, sizeof(struct mac802154dev_rxframe_s));
-        if (ret < 0)
+        // lseek(events[i].data.fd, 0x100, SEEK_SET);
+        while (1)
         {
-          continue;
+          pNode = (struct i8node_s *)events[i].data.ptr;
+          ret = read(pNode->fd, &frame, sizeof(struct mac802154dev_rxframe_s));
+          if (ret < 0)
+          {
+            break;
+          }
+
+          meta.fcs_type = 0;
+          meta.rss = frame.meta.lqi;
+          meta.chl_assign = (2<<16) | pNode->chnl;
+          meta.eof_timestamp = frame.meta.timestamp;
+          //systime = clock();
+          /* write to sdcard */
+          uint32_t bytes;
+          bytes = pcapng_ieee802154_tap_epb_append(
+                datafile, (PCAPNG_EPB_HDR_t *)buf, frame.payload, frame.length, &meta);
+          fsync(fileno(datafile));
+          printf("chl %d write EPB bytes %ld\n", pNode->chnl, bytes);
+
         }
-
-        meta.fcs_type = 0;
-        meta.rss = 10;
-        meta.chl_assign = (2<<16) | 17;
-        systime = clock();
-        /* write to sdcard */
-        pcapng_ieee802154_tap_epb_append(datafile, (PCAPNG_EPB_HDR_t *)buf, frame.payload, frame.length, &meta);
-        fsync(fileno(datafile));
-
       }
 
   }
@@ -272,7 +306,13 @@ EXIT:
   g_i8sniffer.daemon_started = false;
 	free(buf);
 	fclose(datafile);
-  close(fd);
+  for(int i = 0; i < 16 ; i++){
+    pNode = &nodes[i];
+    if(pNode->valid == 0){
+      continue;
+    }
+    close(pNode->fd);
+  }
   free(events);
   close(epfd);
   printf("i8sniffer: daemon closing\n");
