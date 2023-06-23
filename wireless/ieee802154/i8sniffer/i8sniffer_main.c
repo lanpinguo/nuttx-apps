@@ -36,6 +36,8 @@
 #include <time.h>
 #include <errno.h>
 #include <debug.h>
+#include <getopt.h>
+#include <sys/ioctl.h>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -80,22 +82,18 @@
  * Private Types
  ****************************************************************************/
 #define MAX_EVENTS        16
+#define MAX_CHANNEL       16
+
 struct i8sniffer_state_s
 {
-    bool initialized            : 1;
+    bool initialized        : 1;
     bool daemon_started     : 1;
     bool daemon_shutdown    : 1;
 
     pid_t daemon_pid;
 
     /* User exposed settings */
-
-    FAR char devpath[i8sniffer_MAX_DEVPATH];
-
     FAR char data_file[32];
-
-    FAR uint8_t dev_list[32];
-
 
 };
 
@@ -122,12 +120,7 @@ static int i8sniffer_daemon(int argc, FAR char *argv[]);
 
 static struct i8sniffer_state_s g_i8sniffer;
 
-struct i8node_s nodes[16] = {
-    {0, 15, 0, 1},
-    {1, 25, 0, 1},
-    {6, 26, 0, 1},
-    {7, 20, 0, 1},
-};
+struct i8node_s nodes[MAX_CHANNEL] = {0};
 
 /****************************************************************************
  * Public Data
@@ -136,6 +129,27 @@ struct i8node_s nodes[16] = {
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+static int get_list_from_str(uint8_t* str, int32_t* list)
+{
+    uint32_t i = 0;
+    char * token;
+    char *endptr;
+    
+    token = strtok(str, ",");
+    // loop through the string to extract all other tokens
+    while( token != NULL ) {
+        //printf( " %s\n", token ); 
+        list[i] = strtol(token, &endptr, 10);
+        token = strtok(NULL, ",");
+        i++;
+        if(i > MAX_CHANNEL){
+            return i - 1;
+        }
+    }
+
+    return i;
+}
+
 
 /****************************************************************************
  * Name: i8sniffer_init
@@ -143,15 +157,53 @@ struct i8node_s nodes[16] = {
 
 static int i8sniffer_init(FAR struct i8sniffer_state_s *i8sniffer)
 {
+    FILE *cfg_fd;
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t nread;
+    int32_t list[16] = {0};
+    int32_t num;
+    char * token;
+      
+       
     if (i8sniffer->initialized)
-        {
-            return OK;
+    {
+        return OK;
+    }
+
+    cfg_fd = fopen("/mnt/sniffer.cfg","r");
+    if (cfg_fd == NULL)
+    {
+        fprintf(stderr,
+                "ERROR: cannot open %s, errno=%d\n",
+                "sniffer.cfg", errno);
+    }
+    else{
+        while ((nread = getline(&line, &len, cfg_fd)) != -1) {
+            printf("Retrieved cfg line : %s \n", line);
+            token = strtok(line, "=");
+            if(strncmp("nodes", token, strlen(token)) == 0){
+                token = strtok(NULL, "");
+                num = get_list_from_str(token, list);
+                for(int i = 0; i < num; i++){
+                    nodes[i].id = list[i];
+                    //nodes[i].valid = 1;
+                }
+            }
+            else if(strncmp("channels", token, strlen(token)) == 0){
+                token = strtok(NULL, "");
+                num = get_list_from_str(token, list);
+                for(int i = 0; i < num; i++){
+                    nodes[i].chnl = list[i];
+                    nodes[i].valid = 1;
+                }
+            }
         }
 
-    /* Set the default settings using config options */
+        fclose(cfg_fd);
+    }
 
-    strlcpy(i8sniffer->devpath, CONFIG_IEEE802154_I8SNIFFER_DEVPATH,
-                    sizeof(i8sniffer->devpath));
+    /* Set the default settings using config options */
 
     strlcpy(i8sniffer->data_file, "/mnt/data.pcapng",
                     sizeof(i8sniffer->data_file));
@@ -356,8 +408,7 @@ static int i8sniffer_daemon(int argc, FAR char *argv[])
     if (epfd < 0)
         {
             fprintf(stderr,
-                            "ERROR: cannot open %s, errno=%d\n",
-                            g_i8sniffer.devpath, errno);
+                    "ERROR: cannot create epoll fd, errno=%d\n", errno);
             g_i8sniffer.daemon_started = false;
             ret = errno;
             goto EXIT;
@@ -514,6 +565,7 @@ EXIT:
     return OK;
 }
 
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -533,33 +585,51 @@ int main(int argc, FAR char *argv[])
 
     if (argc > 1)
     {
-        /* If the first argument is an interface,
-          * update our character device path
-          */
+        int32_t chr;
+        int32_t list[16] = {0};
+        int32_t num;
 
-        if (strncmp(argv[argind], "/dev/", 5) == 0)
-        {
-            /* Check if the name is the same as the current one */
+        /* If a short parameter has a value, it is required to be followed by a colon ':'. */
+        char opts[] =  "N:H:s"; 
+        char *popt, *endptr;
+        int this_option_optind = optind ? optind : 1;
+        int option_index = 0;
+        static struct option long_options[] = {
+            {"chnl",  required_argument,  0,  'H'},
+            {"node",  required_argument,  0,  'N'},
+            {0,         0,                0,   0 }
+        };
 
-            if (strcmp(g_i8sniffer.devpath, argv[argind]) != 0)
-            {
-                /* Adapter daemon can't be running when we change
-                  * device path
-                  */
+        optind = 0;
+        while ((chr = getopt_long(argc, argv, opts, 
+                long_options, &option_index)) != -1) {
+            switch (chr) {
+            case 0:
+                printf("option %s", long_options[option_index].name);
+                if (optarg)
+                    printf(" with arg %s", optarg);
+                printf("\n");
 
-                if (g_i8sniffer.daemon_started)
-                {
-                    printf("Can't change devpath when daemon is running.\n");
-                    exit(1);
+                break;
+            case 'H':
+                num = get_list_from_str(optarg, list);
+                for(int i = 0; i < num; i++){
+                    nodes[i].chnl = list[i];
+                    nodes[i].valid = 1;
                 }
-
-                /* Copy the path into our state structure */
-
-                strlcpy(g_i8sniffer.devpath, argv[1], sizeof(g_i8sniffer.devpath));
+                break;
+            case 'N':
+                num = get_list_from_str(optarg, list);
+                for(int i = 0; i < num; i++){
+                    nodes[i].id = list[i];
+                }
+                break;
+            default:
+                break;
             }
-
-            argind++;
         }
+
+
     }
 
     /* If the daemon is not running, start it. */
