@@ -1,0 +1,29 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config IR_RCSIM
+	tristate "infrared remote-control simulator"
+	default n
+
+
+if IR_RCSIM
+
+config IR_RCSIM_DAEMON_PRIORITY
+	int "rcsim task priority"
+	default 100
+
+config IR_RCSIM_DAEMON_STACKSIZE
+	int "rcsim stack size"
+	default DEFAULT_TASK_STACKSIZE
+
+config IR_RCSIM_DEVPATH
+	string "ir char driver path"
+	default "/dev/lirc0"
+	---help---
+		The default path to MAC character driver. Default: /dev/ieee0
+
+
+
+endif
