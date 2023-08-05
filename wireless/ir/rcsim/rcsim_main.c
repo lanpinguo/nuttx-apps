@@ -32,8 +32,74 @@
 #include <ctype.h>
 #include <getopt.h>
 #include <sys/ioctl.h>
+#include <stdbool.h>
+#include <sched.h>
+#include <errno.h>
 
 #include <nuttx/lirc.h>
+#include <nuttx/input/buttons.h>
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#ifndef CONFIG_INPUT_BUTTONS
+#  error "CONFIG_INPUT_BUTTONS is not defined in the configuration"
+#endif
+
+#ifndef CONFIG_INPUT_BUTTONS_NPOLLWAITERS
+#  define CONFIG_INPUT_BUTTONS_NPOLLWAITERS 2
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_SIGNO
+#  define CONFIG_EXAMPLES_BUTTONS_SIGNO 32
+#endif
+
+#ifndef CONFIG_INPUT_BUTTONS_POLL_DELAY
+#  define CONFIG_INPUT_BUTTONS_POLL_DELAY 1000
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME0
+#  define CONFIG_EXAMPLES_BUTTONS_NAME0 "BUTTON0"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME1
+#  define CONFIG_EXAMPLES_BUTTONS_NAME1 "BUTTON1"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME2
+#  define CONFIG_EXAMPLES_BUTTONS_NAME2 "BUTTON2"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME3
+#  define CONFIG_EXAMPLES_BUTTONS_NAME3 "BUTTON3"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME4
+#  define CONFIG_EXAMPLES_BUTTONS_NAME4 "BUTTON4"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME5
+#  define CONFIG_EXAMPLES_BUTTONS_NAME5 "BUTTON5"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME6
+#  define CONFIG_EXAMPLES_BUTTONS_NAME6 "BUTTON6"
+#endif
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_NAME7
+#  define CONFIG_EXAMPLES_BUTTONS_NAME7 "BUTTON7"
+#endif
+
+#define BUTTON_MAX 8
+
+#ifndef CONFIG_EXAMPLES_BUTTONS_QTD
+#  define CONFIG_EXAMPLES_BUTTONS_QTD BUTTON_MAX
+#endif
+
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 8
+#  error "CONFIG_EXAMPLES_BUTTONS_QTD > 8"
+#endif
 
 
 
@@ -75,11 +141,42 @@ struct rc5_frame_s{
  ****************************************************************************/
 static uint16_t RC5_BinFrameGeneration(uint8_t RC5_Address, uint8_t RC5_Instruction, rc5_ctrl_t RC5_Ctrl);
 static uint32_t RC5_ManchesterConvert(uint16_t RC5_BinaryFrameFormat);
+static int ir_proc_main(void);
 
 
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+static bool g_button_daemon_started;
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_NAMES
+static const char button_name[CONFIG_EXAMPLES_BUTTONS_QTD][16] =
+{
+  CONFIG_EXAMPLES_BUTTONS_NAME0
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 1
+  , CONFIG_EXAMPLES_BUTTONS_NAME1
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 2
+  , CONFIG_EXAMPLES_BUTTONS_NAME2
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 3
+  , CONFIG_EXAMPLES_BUTTONS_NAME3
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 4
+  , CONFIG_EXAMPLES_BUTTONS_NAME4
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 5
+  , CONFIG_EXAMPLES_BUTTONS_NAME5
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 6
+  , CONFIG_EXAMPLES_BUTTONS_NAME6
+#endif
+#if CONFIG_EXAMPLES_BUTTONS_QTD > 7
+  , CONFIG_EXAMPLES_BUTTONS_NAME7
+#endif
+};
+#endif
+
 
 
 /****************************************************************************
@@ -89,8 +186,6 @@ static uint32_t RC5_ManchesterConvert(uint16_t RC5_BinaryFrameFormat);
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
-
-
 /**
   * @brief Generate the binary format of the RC5 frame.
   * @param RC5_Address : Select the device address.
@@ -156,6 +251,156 @@ static uint32_t RC5_ManchesterConvert(uint16_t RC5_BinaryFrameFormat)
   return (ConvertedMsg);
 }
 
+/****************************************************************************
+ * Name: button_daemon
+ ****************************************************************************/
+
+static int button_daemon(int argc, char *argv[])
+{
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_SIGNAL
+  struct btn_notify_s btnevents;
+#endif
+
+  btn_buttonset_t supported;
+  btn_buttonset_t sample = 0;
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_NAMES
+  btn_buttonset_t oldsample = 0;
+#endif
+
+  int ret;
+  int fd;
+  int i;
+
+  UNUSED(i);
+
+  /* Indicate that we are running */
+
+  g_button_daemon_started = true;
+  printf("button_daemon: Running\n");
+
+  /* Open the BUTTON driver */
+
+  printf("button_daemon: Opening %s\n", CONFIG_EXAMPLES_BUTTONS_DEVPATH);
+  fd = open(CONFIG_EXAMPLES_BUTTONS_DEVPATH, O_RDONLY | O_NONBLOCK);
+  if (fd < 0)
+    {
+      int errcode = errno;
+      printf("button_daemon: ERROR: Failed to open %s: %d\n",
+             CONFIG_EXAMPLES_BUTTONS_DEVPATH, errcode);
+      goto errout;
+    }
+
+  /* Get the set of BUTTONs supported */
+
+  ret = ioctl(fd, BTNIOC_SUPPORTED,
+              (unsigned long)((uintptr_t)&supported));
+  if (ret < 0)
+    {
+      int errcode = errno;
+      printf("button_daemon: ERROR: ioctl(BTNIOC_SUPPORTED) failed: %d\n",
+             errcode);
+      goto errout_with_fd;
+    }
+
+  printf("button_daemon: Supported BUTTONs 0x%02x\n",
+         (unsigned int)supported);
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_SIGNAL
+  /* Define the notifications events */
+
+  btnevents.bn_press   = supported;
+  btnevents.bn_release = supported;
+
+  btnevents.bn_event.sigev_notify = SIGEV_SIGNAL;
+  btnevents.bn_event.sigev_signo  = CONFIG_EXAMPLES_BUTTONS_SIGNO;
+
+  /* Register to receive a signal when buttons are pressed/released */
+
+  ret = ioctl(fd, BTNIOC_REGISTER,
+              (unsigned long)((uintptr_t)&btnevents));
+  if (ret < 0)
+    {
+      int errcode = errno;
+      printf("button_daemon: ERROR: ioctl(BTNIOC_SUPPORTED) failed: %d\n",
+             errcode);
+      goto errout_with_fd;
+    }
+
+  /* Ignore the default signal action */
+
+  signal(CONFIG_EXAMPLES_BUTTONS_SIGNO, SIG_IGN);
+#endif
+
+  /* Now loop forever, waiting BUTTONs events */
+
+  for (; ; )
+    {
+#ifdef CONFIG_EXAMPLES_BUTTONS_SIGNAL
+      struct siginfo value;
+      sigset_t set;
+#endif
+
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_SIGNAL
+      /* Wait for a signal */
+
+      sigemptyset(&set);
+      sigaddset(&set, CONFIG_EXAMPLES_BUTTONS_SIGNO);
+      ret = sigwaitinfo(&set, &value);
+      if (ret < 0)
+        {
+          int errcode = errno;
+          printf("button_daemon: ERROR: sigwaitinfo() failed: %d\n",
+                 errcode);
+          goto errout_with_fd;
+        }
+
+      sample = (btn_buttonset_t)value.si_value.sival_int;
+#endif
+
+
+#ifdef CONFIG_EXAMPLES_BUTTONS_NAMES
+      /* Print name of all pressed/release button */
+
+      for (i = 0; i < CONFIG_EXAMPLES_BUTTONS_QTD; i++)
+        {
+          if ((sample & (1 << i)) && !(oldsample & (1 << i)))
+            {
+              printf("%s was pressed\n", button_name[i]);
+              ir_proc_main();
+            }
+
+          if (!(sample & (1 << i)) && (oldsample & (1 << i)))
+            {
+              printf("%s was released\n", button_name[i]);
+            }
+        }
+
+      oldsample = sample;
+#else
+      printf("Sample = %jd\n", (intmax_t)sample);
+#endif
+
+      /* Make sure that everything is displayed */
+
+      fflush(stdout);
+
+      usleep(1000);
+    }
+
+errout_with_fd:
+  close(fd);
+
+errout:
+  g_button_daemon_started = false;
+
+  printf("button_daemon: Terminating\n");
+  return EXIT_FAILURE;
+}
+
+
 
 
 
@@ -165,11 +410,60 @@ static uint32_t RC5_ManchesterConvert(uint16_t RC5_BinaryFrameFormat)
  * Name: rcsim_main
  ****************************************************************************/
 
+static int ir_proc_main(void)
+{
+  int32_t ret = 0;
+  char devname[18] = {0};
+  uint32_t minor = 0;
+
+  snprintf(devname, sizeof(devname), "/dev/lirc%u", (unsigned int)minor);
+
+  /* Open lirc Driver */
+  int fd = open(devname, O_RDWR);
+  assert(fd >= 0);
+
+  ret = ioctl(fd, LIRC_SET_SEND_MODE, LIRC_MODE_PULSE);
+  if(ret < 0){
+      printf("ioctl error: %ld\n", ret);
+  }
+
+#if 0
+  struct rc5_frame_s ir_raw_data;
+
+  memset(&ir_raw_data, 0, sizeof(struct rc5_frame_s));
+  uint16_t sndCode = RC5_BinFrameGeneration(0x1, 0x5, RC5_CTRL_RESET);
+  ir_raw_data.manchester_code = RC5_ManchesterConvert(sndCode);
+  /* write ir command */
+  int bytes_tx = write(fd, &ir_raw_data, sizeof(ir_raw_data));
+  if(bytes_tx <= 0){
+    printf("write error\n");
+  }
+  printf("write manchester_code: %08x\n", ir_raw_data.manchester_code);
+
+#else
+  uint32_t night_led_raw[5] = {
+    0xa848003f, 0xb488aaa2, 0xb0843430, 0x00000004, 0x00000000
+  };
+  /* write ir command */
+  int bytes_tx = write(fd, &night_led_raw, sizeof(night_led_raw));
+  if(bytes_tx <= 0){
+    printf("write error\n");
+  }
+#endif
+  /*  */
+  close(fd);
+
+  return OK;
+}
+
+
+/****************************************************************************
+ * buttons_main
+ ****************************************************************************/
+
 int main(int argc, FAR char *argv[])
 {
   int32_t ret = 0;
-  uint32_t minor = 0;
-  char devname[18] = {0};
 	int32_t chr;
 	char opts[] =  "s:m:v:l:h:cr:w:d"; //If a short parameter has a value, it is required to be followed by a colon ':'.
   char *popt, *endptr;
@@ -207,33 +501,24 @@ int main(int argc, FAR char *argv[])
 
 
 
-  snprintf(devname, sizeof(devname), "/dev/lirc%u", (unsigned int)minor);
+  printf("buttons_main: Starting the button_daemon\n");
+  if (g_button_daemon_started)
+    {
+      printf("buttons_main: button_daemon already running\n");
+      return EXIT_SUCCESS;
+    }
 
-  /* Open lirc Driver */
-  int fd = open(devname, O_RDWR);
-  assert(fd >= 0);
+  ret = task_create("button_daemon", CONFIG_RCSIM_DAEMON_PRIORITY,
+                    CONFIG_RCSIM_DAEMON_STACKSIZE, button_daemon,
+                    NULL);
+  if (ret < 0)
+    {
+      int errcode = errno;
+      printf("buttons_main: ERROR: Failed to start button_daemon: %d\n",
+             errcode);
+      return EXIT_FAILURE;
+    }
 
-  ret = ioctl(fd, LIRC_SET_SEND_MODE, LIRC_MODE_PULSE);
-  if(ret < 0){
-      printf("ioctl error: %ld\n", ret);
-  }
-
-
-  struct rc5_frame_s ir_raw_data;
-
-  memset(&ir_raw_data, 0, sizeof(struct rc5_frame_s));
-  uint16_t sndCode = RC5_BinFrameGeneration(0x1, 0x5, RC5_CTRL_RESET);
-  ir_raw_data.manchester_code = RC5_ManchesterConvert(sndCode);
-
-  /* write ir command */
-  int bytes_tx = write(fd, &ir_raw_data, sizeof(ir_raw_data));
-  if(bytes_tx <= 0){
-    printf("write error\n");
-  }
-  printf("write manchester_code: %08x\n", ir_raw_data.manchester_code);
-
-  /*  */
-  close(fd);
-
-  return OK;
+  printf("buttons_main: button_daemon started\n");
+  return EXIT_SUCCESS;
 }
